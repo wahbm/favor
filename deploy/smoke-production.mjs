@@ -62,6 +62,32 @@ try {
   const backup = await request(path + '/export.json');
   assert.equal(backup.format, 'favor');
   assert.equal(backup.records.length, 1);
+  const family = await request('/ledgers', 'POST', { name: '部署验收家庭（临时）' });
+  const familyPath = '/ledgers/' + family.id;
+  const occasion = await request(path + '/occasions', 'POST', { name: '部署验收事由（临时）' });
+  const event = await request(path + '/events', 'POST', { name: '部署验收事件（临时）' });
+  const familyBefore = await request(familyPath + '/meta');
+  assert.equal(familyBefore.people.length, 0);
+  assert(familyBefore.reusable.people.some((p) => p.id === person.id));
+  await request(familyPath + '/records', 'POST', {
+    personId: person.id,
+    occasionId: occasion.id,
+    eventId: event.id,
+    direction: 'expense',
+    date: '2018-01-01',
+    amountCents: 1,
+    scope: 'family',
+    ownerId: null,
+    handlerId: userId,
+    note: '跨账本资料复用验收',
+    reuse: { person: true, occasion: true, event: true },
+  });
+  const familyAfter = await request(familyPath + '/meta');
+  assert.equal(familyAfter.people.length, 1);
+  assert.notEqual(familyAfter.people[0].id, person.id);
+  assert.equal(familyAfter.events.length, 1);
+  assert.equal((await request(path + '/records')).records.length, 1);
+  console.log('PRODUCTION_CATALOG_REUSE_OK selected_metadata_only independent_records');
   console.log('PRODUCTION_SMOKE_OK registration login persistent_record exact_amount export');
 } finally {
   // Match only this cryptographically random, script-created user. Do not touch other accounts.

@@ -460,6 +460,149 @@ test('MariaDB + Fastify 完整业务与权限集成', { skip: !testUrl }, async 
         0,
       );
     });
+    await t.test('跨账本资料仅供本人复用，选用后才向目标家庭共享，记录保持隔离', async () => {
+      const privatePath = `/ledgers/${personal.id}`;
+      const sourcePerson = await alice.ok<{ id: string }>(privatePath + '/people', 'POST', {
+        name: '共享联系人',
+        relationship: '同学',
+        note: '这是已选择的资料',
+      });
+      const hiddenPerson = await alice.ok<{ id: string }>(privatePath + '/people', 'POST', {
+        name: '未选中的私人联系人',
+        note: '不得自动对家人展示',
+      });
+      const sourceOccasion = await alice.ok<{ id: string }>(privatePath + '/occasions', 'POST', {
+        name: '个人自定义庆祝',
+      });
+      const sourceEvent = await alice.ok<{ id: string }>(privatePath + '/events', 'POST', {
+        name: '个人的婚礼',
+      });
+      const target = (
+        await alice.ok<{ id: string }>('/ledgers', 'POST', { name: '复用资料的家庭' })
+      ).id;
+      const targetPath = `/ledgers/${target}`;
+      const invite = await alice.ok<{ url: string }>(targetPath + '/invites', 'POST');
+      await bob.ok('/invites/accept', 'POST', {
+        token: new URL(invite.url).searchParams.get('invite'),
+      });
+      const before = await alice.ok<Meta>(targetPath + '/meta');
+      assert(before.reusable?.people.some((p) => p.id === sourcePerson.id));
+      assert(before.reusable?.people.some((p) => p.id === hiddenPerson.id));
+      assert(before.reusable?.occasions.some((p) => p.id === sourceOccasion.id));
+      assert(before.reusable?.events.some((p) => p.id === sourceEvent.id));
+      const bobBefore = await bob.ok<Meta>(targetPath + '/meta');
+      assert(
+        !bobBefore.reusable?.people.some(
+          (p) => p.id === sourcePerson.id || p.id === hiddenPerson.id,
+        ),
+      );
+      assert(!bobBefore.reusable?.occasions.some((p) => p.id === sourceOccasion.id));
+      assert(!bobBefore.reusable?.events.some((p) => p.id === sourceEvent.id));
+      assert.equal(bobBefore.people.length, 0);
+      const input = {
+        ...base,
+        personId: sourcePerson.id,
+        occasionId: sourceOccasion.id,
+        eventId: sourceEvent.id,
+        reuse: { person: true, occasion: true, event: true },
+      };
+      // Even when metadata has already been copied inside the transaction, a failed record
+      // validation must roll back every copy so family members learn nothing from the attempt.
+      assert.equal(
+        (
+          await alice.request(targetPath + '/records', 'POST', {
+            ...input,
+            scope: 'personal',
+            ownerId: eve.id,
+          })
+        ).statusCode,
+        400,
+      );
+      const afterFailure = await bob.ok<Meta>(targetPath + '/meta');
+      assert.equal(afterFailure.people.length, 0);
+      assert.equal(afterFailure.events.length, 0);
+      assert.equal(afterFailure.occasions.length, 3);
+      const personalCount = (await alice.ok<{ records: Entry[] }>(privatePath + '/records')).records
+        .length;
+      await alice.ok(targetPath + '/records', 'POST', input);
+      const shared = await bob.ok<Meta>(targetPath + '/meta');
+      assert.equal(shared.people.length, 1);
+      assert.equal(shared.people[0].name, '共享联系人');
+      assert.notEqual(shared.people[0].id, sourcePerson.id);
+      assert(shared.occasions.some((o) => o.name === '个人自定义庆祝'));
+      assert(shared.events.some((o) => o.name === '个人的婚礼'));
+      assert(!JSON.stringify(shared).includes('不得自动对家人展示'));
+      assert.equal(
+        (await alice.ok<{ records: Entry[] }>(privatePath + '/records')).records.length,
+        personalCount,
+      );
+      const [record] = (await bob.ok<{ records: Entry[] }>(targetPath + '/records')).records;
+      assert.equal(record.personId, shared.people[0].id);
+      assert.equal(
+        record.occasionId,
+        shared.occasions.find((o) => o.name === '个人自定义庆祝')!.id,
+      );
+      assert.equal(record.eventId, shared.events[0].id);
+      await alice.ok(privatePath + '/people/' + sourcePerson.id, 'PUT', {
+        name: '共享联系人',
+        relationship: '同学',
+        note: '仅个人新增的私密说明',
+      });
+      await alice.ok(targetPath + '/records', 'POST', input);
+      const copiedAgain = await bob.ok<Meta>(targetPath + '/meta');
+      assert.equal(copiedAgain.people.length, 1);
+      assert.equal(copiedAgain.events.length, 1);
+      assert.equal(copiedAgain.occasions.length, 4);
+      assert.equal(copiedAgain.people[0].note, '这是已选择的资料');
+      assert(!JSON.stringify(copiedAgain).includes('仅个人新增的私密说明'));
+      assert.equal((await bob.request(targetPath + '/records', 'POST', input)).statusCode, 404);
+      const aliceAfter = await alice.ok<Meta>(targetPath + '/meta');
+      assert(!aliceAfter.reusable?.people.some((p) => p.id === sourcePerson.id));
+      assert(aliceAfter.reusable?.people.some((p) => p.id === hiddenPerson.id));
+      const eveLedger = (await eve.ok<Ledger[]>('/ledgers')).find((l) => l.kind === 'personal')!;
+      const forbidden = await eve.ok<{ id: string }>(`/ledgers/${eveLedger.id}/people`, 'POST', {
+        name: '其他账号的私密人物',
+      });
+      assert.equal(
+        (await alice.request(targetPath + '/records', 'POST', { ...input, personId: forbidden.id }))
+          .statusCode,
+        404,
+      );
+    });
+    await t.test('退出来源家庭后立即失去该家庭资料的复用权限', async () => {
+      const source = (await alice.ok<{ id: string }>('/ledgers', 'POST', { name: '来源家庭' })).id;
+      const sourcePath = `/ledgers/${source}`;
+      const person = await alice.ok<{ id: string }>(sourcePath + '/people', 'POST', {
+        name: '退出后不可复用的人物',
+      });
+      const invite = await alice.ok<{ url: string }>(sourcePath + '/invites', 'POST');
+      await bob.ok('/invites/accept', 'POST', {
+        token: new URL(invite.url).searchParams.get('invite'),
+      });
+      const target = `/ledgers/${personalBob.id}`;
+      assert(
+        (await bob.ok<Meta>(target + '/meta')).reusable?.people.some((p) => p.id === person.id),
+      );
+      await alice.ok(sourcePath + '/members/' + bob.id, 'DELETE');
+      const after = await bob.ok<Meta>(target + '/meta');
+      assert(!after.reusable?.people.some((p) => p.id === person.id));
+      assert.equal(
+        (
+          await bob.request(target + '/records', 'POST', {
+            ...base,
+            personId: person.id,
+            occasionId: after.occasions[0].id,
+            eventId: null,
+            scope: 'personal',
+            ownerId: bob.id,
+            handlerId: bob.id,
+            reuse: { person: true },
+          })
+        ).statusCode,
+        404,
+      );
+      assert.equal((await bob.ok<Meta>(target + '/meta')).people.length, after.people.length);
+    });
     await t.test('修改密码撤销旧会话，登录限流生效', async () => {
       const oldCookie = alice.cookie;
       const r = await alice.request('/auth/password', 'POST', {

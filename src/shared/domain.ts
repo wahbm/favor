@@ -35,6 +35,13 @@ export const recordSchema = z.object({
   ownerId: z.string().uuid().nullable().default(null),
   handlerId: z.string().uuid().nullable().default(null),
   note: z.string().trim().max(2000).default(''),
+  reuse: z
+    .object({
+      person: z.boolean().default(false),
+      occasion: z.boolean().default(false),
+      event: z.boolean().default(false),
+    })
+    .optional(),
 });
 export type RecordInput = z.infer<typeof recordSchema>;
 export type User = { id: string; username: string };
@@ -56,7 +63,19 @@ export type Entry = RecordInput & {
   updatedAt: string;
   version: number;
 };
-export type Meta = { people: Person[]; occasions: Named[]; events: Named[]; members: Member[] };
+export type Reusable<T> = T & { sourceLedgerName: string };
+export type ReusableCatalog = {
+  people: Reusable<Person>[];
+  occasions: Reusable<Named>[];
+  events: Reusable<Named>[];
+};
+export type Meta = {
+  people: Person[];
+  occasions: Named[];
+  events: Named[];
+  members: Member[];
+  reusable?: ReusableCatalog;
+};
 export type Summary = { income: number; expense: number; count: number };
 export const credentialsSchema = z.object({
   username: z

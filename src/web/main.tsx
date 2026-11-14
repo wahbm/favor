@@ -1197,6 +1197,7 @@ function RecordEditor({
     [occasions, setOccasions] = useState(meta.occasions),
     [events, setEvents] = useState(meta.events);
   const path = `/ledgers/${ledger.id}`;
+  const reusable = meta.reusable ?? { people: [], occasions: [], events: [] };
   const activeMembers = meta.members.filter(
     (m) => m.active || m.id === entry?.ownerId || m.id === entry?.handlerId,
   );
@@ -1232,9 +1233,14 @@ function RecordEditor({
         setEventId(ev);
       }
       const body: RecordInput = {
-        personId: p,
-        occasionId: o,
-        eventId: ev || null,
+        personId: p.replace(/^reuse:/, ''),
+        occasionId: o.replace(/^reuse:/, ''),
+        eventId: ev.replace(/^reuse:/, '') || null,
+        reuse: {
+          person: p.startsWith('reuse:'),
+          occasion: o.startsWith('reuse:'),
+          event: ev.startsWith('reuse:'),
+        },
         direction,
         date: String(f.get('date')),
         amountCents: amountToCents(String(f.get('amount'))),
@@ -1318,6 +1324,17 @@ function RecordEditor({
                   {p.note ? ' · ' + p.note : ''}
                 </option>
               ))}
+              {reusable.people.length > 0 && (
+                <optgroup label="从我的其他账本复用（保存后加入本账本）">
+                  {reusable.people.map((p) => (
+                    <option key={p.id} value={'reuse:' + p.id}>
+                      {p.name}
+                      {p.relationship ? ' · ' + p.relationship : ''}
+                      {p.note ? ' · ' + p.note : ''} — {p.sourceLedgerName}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
               <option value="new">＋ 添加新人物（允许同名）</option>
             </select>
           </label>
@@ -1330,6 +1347,15 @@ function RecordEditor({
                   {o.name}
                 </option>
               ))}
+              {reusable.occasions.length > 0 && (
+                <optgroup label="从我的其他账本复用（保存后加入本账本）">
+                  {reusable.occasions.map((o) => (
+                    <option key={o.id} value={'reuse:' + o.id}>
+                      {o.name} — {o.sourceLedgerName}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
               <option value="new">＋ 自定义事由</option>
             </select>
           </label>
@@ -1367,6 +1393,15 @@ function RecordEditor({
                 {o.name}
               </option>
             ))}
+            {reusable.events.length > 0 && (
+              <optgroup label="从我的其他账本复用（保存后加入本账本）">
+                {reusable.events.map((o) => (
+                  <option key={o.id} value={'reuse:' + o.id}>
+                    {o.name} — {o.sourceLedgerName}
+                  </option>
+                ))}
+              </optgroup>
+            )}
             <option value="new">＋ 创建具体事件</option>
           </select>
         </label>
@@ -1425,6 +1460,11 @@ function RecordEditor({
             placeholder="例如：夫妻共同送礼、由父母代收"
           />
         </label>
+        {[personId, occasionId, eventId].some((id) => id.startsWith('reuse:')) && (
+          <p className="hint">
+            保存后，所选资料会加入当前账本并对本账本成员可见；往来记录不会复制，各账本资料独立维护。
+          </p>
+        )}
         <p className="hint">
           {ledger.kind === 'family'
             ? '本笔记录对当前家庭账本所有成员可见；归属维度仅用于统计。'

@@ -7,6 +7,7 @@ import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypt
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import argon2 from 'argon2';
+import { reusableCatalog, reuseRecordCatalog } from './catalog.js';
 import { z } from 'zod';
 import { pool, q, transaction, type DB, type SQLValue } from './db.js';
 import {
@@ -496,6 +497,7 @@ export async function buildApp() {
   );
   app.get('/api/ledgers/:ledgerId/meta', (req) =>
     scoped(req, async (db, l) => ({
+      reusable: await reusableCatalog(db, l.id, req.user.id),
       people: await q<Person>(
         db,
         'SELECT id,name,relationship,note FROM people WHERE ledger_id=? ORDER BY name',
@@ -576,20 +578,21 @@ export async function buildApp() {
   );
   app.post('/api/ledgers/:ledgerId/records', (req) =>
     scoped(req, async (db, l) => {
-      const r = recordSchema.parse(req.body);
+      const r = await reuseRecordCatalog(db, l.id, req.user.id, recordSchema.parse(req.body));
       await validRecord(db, l, r);
       return { id: await insertRecord(db, l.id, r, req.user.id) };
     }),
   );
   app.put('/api/ledgers/:ledgerId/records/:id', (req) =>
     scoped(req, async (db, l) => {
-      const r = recordSchema.extend({ version: z.number().int().positive() }).parse(req.body);
+      let r = recordSchema.extend({ version: z.number().int().positive() }).parse(req.body);
       const [old] = await q<Entry>(db, entrySelect + ' WHERE r.ledger_id=? AND r.id=?', [
         l.id,
         params(req).id,
       ]);
       if (!old) fail(404, '记录不存在');
       if (old.version !== r.version) fail(409, '记录已被其他成员修改，请关闭窗口并刷新后重试');
+      r = { ...(await reuseRecordCatalog(db, l.id, req.user.id, r)), version: r.version };
       await validRecord(db, l, r, old);
       await q(
         db,
