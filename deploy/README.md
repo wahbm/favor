@@ -15,7 +15,7 @@
 
 `bootstrap-ecs.sh`是首次初始化脚本，**不可直接重复执行**：遇到已有数据库、账号、目录或配置立即停止，先由运维核实，不覆盖已有项目。它安装根用户持有的`favor-release`辅助程序，deploy只可调用这一程序，不获得广泛sudo权限。
 
-`favor-release <唯一版本号>`串行执行数据库备份、迁移、current原子切换、重启和本机健康检查。失败保留诊断，并回切已验证的上一版本；首次失败停止新服务。`favor-release prune`只在CI公网HTTPS健康与页面校验通过后调用，仅清理本项目的构建release，保留当前和一个已验证旧版。数据库和备份不放在release目录。
+`favor-release <唯一版本号>`串行执行数据库备份、迁移、current原子切换、重启和本机健康检查。失败保留诊断，并回切已验证的上一版本；首次失败停止新服务。`favor-release smoke`以服务账号验证真实注册、登录、记账持久性与导出，然后按随机验收账号ID清理自己的临时数据，不触碰其他账号。`favor-release prune`只在CI公网HTTPS健康与页面校验通过后调用，仅清理本项目的构建release，保留当前和一个已验证旧版。数据库和备份不放在release目录。
 
 每次发布的数据库备份位于`/var/backups/favor/pre-<版本号>.sql`，仅root可读。当前未设置定时备份、异地保存或自动清理数据库备份；运维应监测备份目录磁盘用量并根据保留策略人工维护。Nginx初始配置备份同样保存在此目录。应用日志使用journalctl，避免记录邀请链接查询参数。
 
@@ -55,7 +55,7 @@ npm ci
 npm run build
 TEST_DATABASE_URL='mysql://USER:PASSWORD@127.0.0.1:3306/favor_test' npm test
 npm prune --omit=dev
-tar -czf favor-linux-x64.tgz dist node_modules package.json package-lock.json
+tar -czf favor-linux-x64.tgz dist node_modules package.json package-lock.json deploy/smoke-production.mjs
 ```
 
 生产部署按以下顺序执行（需要具有对应权限的运维人员）：
@@ -63,7 +63,7 @@ tar -czf favor-linux-x64.tgz dist node_modules package.json package-lock.json
 1. 在确认无路径冲突后创建 `/var/www/mosshqq/favor/releases/<唯一版本号>/`，将运行包解压至该目录，检查 `dist/server/index.js`、`dist/server/migrate.js`、`dist/client/index.html` 和 `node_modules` 完整。释放目录由部署账号持有，服务用户只读，禁止由应用写入自身代码。
 2. 安装并审阅 `favor.service` 至 `/etc/systemd/system/favor.service`，核对 `/usr/bin/node` 的真实路径；执行 `systemctl daemon-reload`。新服务首次暂不启动，等待release切换。
 3. 使用服务器上权限0600的MariaDB客户端配置文件执行 `mariadb-dump --defaults-extra-file=/受保护路径/db.cnf --single-transaction --routines --triggers favor > /受保护备份目录/迁移前.sql`。shell重定向前先设置 `umask 077`；检查退出状态和备份大小。不要把密码放在命令参数里。
-4. 审阅 `activate-release.sh` 的项目路径、端口与服务名，确保与本项目一致。以运维权限执行 `FAVOR_BACKUP_FILE=/受保护备份目录/迁移前.sql bash deploy/activate-release.sh <版本号>`。脚本先从候选版本迁移，成功后原子切换 `current`、重启服务并检查数据库健康；重启或健康失败时回切原版本。首次失败则停止服务，保留候选用于诊断。
+4. 审阅并由root安装 `favor-release` 至 `/usr/local/sbin/favor-release`，仅向deploy授予此固定辅助程序的sudo权限。执行 `sudo -n /usr/local/sbin/favor-release <版本号>`；它自动备份数据库、迁移、原子切换、重启和健康检查，失败回切已验证旧版。首次失败停止服务并保留候选诊断。不要直接以root执行release内可由deploy修改的脚本。
 5. 将 `nginx.conf.example` 改为实际域名与证书路径，使用单独配置文件，确保未覆盖既有站点。紧接着执行 `nginx -t`，仅成功后reload。外网仅开放80/443和受控SSH；应用不开放公网端口。为避免邀请令牌进入访问日志，模板关闭本站Nginx access log；应用日志保留路径和错误但省略查询参数。
 6. 执行 `systemctl enable favor.service`，验证重启持久性。检查公网HTTPS页面、`/api/health`、刷新页面、注册登录、实际新增记录、退出再登录后记录仍在、家庭邀请和移除成员流程。检查浏览器控制台和 `journalctl -u favor.service`。
 7. 实测RAM/swap、磁盘剩余空间，记录当前版本、已验证版本和备份位置。只有公网业务验证通过后，人工删除确认属于本项目的更旧release，保留当前版本及一个已验证的上一版本。脚本不会自动广泛删除目录。

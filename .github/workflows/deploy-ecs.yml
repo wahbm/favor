@@ -37,7 +37,7 @@ jobs:
           TEST_DATABASE_URL: mysql://root:local-ci-only@127.0.0.1:3306/favor_test
       - run: npm prune --omit=dev
       - run: |
-          tar -czf favor-linux-x64.tgz dist node_modules package.json package-lock.json
+          tar -czf favor-linux-x64.tgz dist node_modules package.json package-lock.json deploy/smoke-production.mjs
           sha256sum favor-linux-x64.tgz > favor-linux-x64.tgz.sha256
       - uses: actions/upload-artifact@v4
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -82,6 +82,10 @@ jobs:
           ssh "${ssh_options[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "test -d '$DEPLOY_PATH/incoming' && test ! -e '$DEPLOY_PATH/releases/$RELEASE_ID'"
           scp "${ssh_options[@]}" -P "$DEPLOY_PORT" favor-linux-x64.tgz "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/incoming/$RELEASE_ID.tgz"
           ssh "${ssh_options[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "set -eu; mkdir '$DEPLOY_PATH/releases/$RELEASE_ID'; tar -xzf '$DEPLOY_PATH/incoming/$RELEASE_ID.tgz' -C '$DEPLOY_PATH/releases/$RELEASE_ID'; sudo -n /usr/local/sbin/favor-release '$RELEASE_ID'; rm '$DEPLOY_PATH/incoming/$RELEASE_ID.tgz'"
+      - name: Verify production login, persistence and export; clean acceptance data
+        run: |
+          set -euo pipefail
+          ssh -i "$RUNNER_TEMP/favor-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/favor-ssh/known_hosts" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'sudo -n /usr/local/sbin/favor-release smoke'
       - name: Verify public HTTPS health and page
         run: |
           set -euo pipefail

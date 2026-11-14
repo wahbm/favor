@@ -10,6 +10,13 @@ project_root=/var/www/mosshqq/favor
 # Lock covers both activation and post-verification artifact cleanup.
 exec 9>/run/lock/favor-release.lock
 flock -w 300 9
+if [[ "$release_id" == 'smoke' ]]; then
+  systemctl is-active --quiet favor.service
+  current=$(readlink -f "$project_root/current")
+  [[ "$current" == "$project_root/releases/"* && -f "$current/deploy/smoke-production.mjs" ]] || exit 1
+  (cd "$current" && runuser -u favor -- /usr/bin/node --env-file=/etc/favor/favor.env deploy/smoke-production.mjs)
+  exit 0
+fi
 if [[ "$release_id" == 'prune' ]]; then
   systemctl is-active --quiet favor.service
   curl --fail --silent --max-time 3 http://127.0.0.1:3001/api/health >/dev/null
