@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Install root:root 0755 at /usr/local/sbin/favor-release after review.
+# deploy may execute only this helper; never give it unrestricted sudo.
+set -euo pipefail
+[[ "$EUID" -eq 0 ]] || { echo 'Run via the approved sudo rule' >&2; exit 1; }
+[[ "$#" -eq 1 && "$1" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid release id' >&2; exit 1; }
+release_id=$1
+project_root=/var/www/mosshqq/favor
+[[ "$(stat -c '%U:%G:%a' "$project_root")" == 'root:root:755' ]] || { echo 'Unsafe project root ownership' >&2; exit 1; }
+# Lock covers both activation and post-verification artifact cleanup.
+exec 9>/run/lock/favor-release.lock
+flock -w 300 9
+if [[ "$release_id" == 'prune' ]]; then
+  systemctl is-active --quiet favor.service
+  curl --fail --silent --max-time 3 http://127.0.0.1:3001/api/health >/dev/null
+  current=$(readlink -f "$project_root/current")
+  [[ "$current" == "$project_root/releases/"* ]] || exit 1
+  previous=''
+  if [[ -f "$project_root/known-good" ]]; then previous=$(cat "$project_root/known-good"); fi
+  for candidate in "$project_root"/releases/*; do
+    [[ -d "$candidate" && ! -L "$candidate" ]] || continue
+    [[ "$candidate" == "$current" || "$candidate" == "$previous" ]] && continue
+    [[ "$(basename "$candidate")" =~ ^[a-zA-Z0-9_-]+$ ]] || exit 1
+    rm -rf --one-file-system -- "$candidate"
+  done
+  echo 'Retained current and one known-good release'
+  exit 0
+fi
+release_dir="$project_root/releases/$release_id"
+[[ -d "$release_dir" && ! -L "$release_dir" && "$(readlink -f "$release_dir")" == "$release_dir" ]] || { echo 'Invalid candidate directory' >&2; exit 1; }
+for file in dist/server/index.js dist/server/migrate.js dist/client/index.html; do
+  [[ -f "$release_dir/$file" ]] || { echo "Missing $file" >&2; exit 1; }
+done
+[[ -d "$release_dir/node_modules" ]] || { echo 'Missing production dependencies' >&2; exit 1; }
+previous_release=''
+if [[ -L "$project_root/current" ]]; then
+  systemctl is-active --quiet favor.service
+  curl --fail --silent --max-time 3 http://127.0.0.1:3001/api/health >/dev/null
+  previous_release=$(readlink -f "$project_root/current")
+  [[ "$previous_release" == "$project_root/releases/"* && "$previous_release" != "$release_dir" ]] || { echo 'Invalid previous release' >&2; exit 1; }
+elif [[ -e "$project_root/current" ]]; then
+  echo 'current is not a managed symlink' >&2; exit 1
+fi
+# Project-only, server-only backup before every schema migration; no password in arguments.
+install -d -m 0700 /var/backups/favor
+backup_file="/var/backups/favor/pre-$release_id.sql"
+[[ ! -e "$backup_file" ]] || { echo 'Release id has already been used' >&2; exit 1; }
+umask 077
+mariadb-dump --single-transaction --routines --triggers favor > "$backup_file"
+[[ -s "$backup_file" ]]
+(cd "$release_dir" && runuser -u favor -- /usr/bin/node --env-file=/etc/favor/favor.env dist/server/migrate.js)
+next_link="$project_root/.next-$release_id-$$"
+trap 'rm -f "$next_link"' EXIT
+ln -s "$release_dir" "$next_link"
+mv -Tf "$next_link" "$project_root/current"
+healthy=false
+if systemctl restart favor.service; then
+  for attempt in {1..20}; do
+    if curl --fail --silent --max-time 3 http://127.0.0.1:3001/api/health >/dev/null; then healthy=true; break; fi
+    sleep 1
+  done
+fi
+if [[ "$healthy" == true ]] && systemctl is-active --quiet favor.service; then
+  if [[ -n "$previous_release" ]]; then
+    printf '%s\n' "$previous_release" > "$project_root/known-good"
+  fi
+  printf '%s\n' "$release_id" > "$project_root/active-release"
+  echo "Favor release active: $release_id"
+else
+  if ! journalctl -u favor.service -n 50 --no-pager >&2; then echo 'Cannot read journal' >&2; fi
+  if [[ -n "$previous_release" ]]; then
+    ln -s "$previous_release" "$next_link"
+    mv -Tf "$next_link" "$project_root/current"
+    systemctl restart favor.service
+    curl --fail --silent --retry 5 --retry-delay 1 --retry-connrefused --max-time 3 http://127.0.0.1:3001/api/health >/dev/null
+    echo 'Code rolled back to the previous verified release' >&2
+  else
+    systemctl stop favor.service
+    rm -f "$project_root/current"
+  fi
+  echo 'Release failed; schema is not automatically rolled back' >&2
+  exit 1
+fi

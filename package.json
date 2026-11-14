@@ -1,0 +1,42 @@
+{
+  "name": "favor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"tsx watch --env-file=.env src/server/index.ts\" \"vite --host localhost\"",
+    "build": "npm run typecheck && vite build && esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server/index.js && esbuild src/server/migrate.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server/migrate.js",
+    "typecheck": "tsc --noEmit",
+    "start": "node --env-file=.env dist/server/index.js",
+    "migrate": "tsx --env-file=.env src/server/migrate.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^10.1.11",
+    "argon2": "^0.44.0",
+    "fastify": "^5.6.0",
+    "mysql2": "^3.15.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.25.10",
+    "prettier": "^3.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.7"
+  }
+}
